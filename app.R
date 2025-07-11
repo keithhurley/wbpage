@@ -4,6 +4,8 @@
 ## libraries ----
 library(shiny)
 library(dplyr)
+library(lubridate)
+library(stringr)
 library(rlist)
 library(bslib)
 library(leaflet)
@@ -41,7 +43,7 @@ ui <- fluidPage(
         background-color: #ffffff;
         margin-bottom: 20px;
         padding: 15px;
-        min-height: 400px;
+        #min-height: 400px;
       }
       # /* Card header styling */
       # .myHeader {
@@ -94,26 +96,117 @@ ui <- fluidPage(
                     uiOutput("nav_button"))
          )))
   )),
-  fluidRow(class = "d-flex full‐height‐row",
-           column(
-             width = 12, class = "d-flex flex-column",
-             card("Surveys Go Here"))),
+  fluidRow(
+    column(
+      width = 6, class = "d-flex flex-column",
+      card(full_height = TRUE, class = "flex-fill", card_header("Past Surveys"), card_body(tableOutput("surveyHistory")))
+    ),
+    column(
+      width = 6, class = "d-flex flex-column",
+      card(full_height = TRUE, class = "flex-fill", card_header("Species Observed"), card_body(uiOutput("surveySpecies")))
+    ),
+  ),
+  fluidRow(
+    column(
+      width = 12,
+      card(
+        full_height = TRUE,
+        class = "flex-fill d-flex flex-column",
+        card_header("Recent Sampling Results"),
+        card_body(
+          class = "flex-fill d-flex flex-column",
+          
+          # a) the plot
+          plotOutput("selectedCPUE", height = "60vh", width = "100%"),
+          
+          # b) the dots
+          uiOutput("cpueDots")
+        )
+      )
+    )
+  ),
   fluidRow(class = "d-flex full‐height‐row",
            column(
              width = 6, class = "d-flex flex-column",
-             card("Stockings Go Here")),
+             card(          full_height = TRUE,
+                            class = "flex-fill d-flex flex-column",
+                            card_header("Stockings"),
+                            card_body(
+                              class = "flex-fill d-flex flex-column",
+                              tableOutput("stockings"),
+                            ))
+             ),
            column(
              width = 6, class = "d-flex flex-column",
-             card("Planned Stockings"))),
+             card(        
+               full_height = TRUE,
+                          class = "flex-fill d-flex flex-column",
+                          card_header("Planned Stockings"),
+                          card_body(
+                            class = "flex-fill d-flex flex-column",
+                            tableOutput("plannedStockings"),
+                          )
+                          ))),
+  fluidRow(
+    column(
+      width = 12,
+      card(
+        full_height = TRUE,
+        class = "flex-fill d-flex flex-column",
+        card_header("Stocking Timeline"),
+        card_body(
+          # 1) Load the Timeline CSS & JS
+          tags$head(
+            tags$link(
+              rel  = "stylesheet",
+              href = "https://cdn.knightlab.com/libs/timeline/latest/css/storyjs-embed.css"
+            ),
+            tags$script(
+              src = "https://cdn.knightlab.com/libs/timeline/latest/js/storyjs-embed.js"
+            )
+          ),
+          
+          # 2) The DIV where the timeline will go
+          tags$div(
+            id    = "stockingDiv",
+            style = "width:100%; height:600px;"
+          ),
+          
+          # 3) A little bit of JS to fire off the AJAX when Shiny is ready
+          uiOutput("stockingTimelineScript")
+        )
+      )
+    )
+  ),
   fluidRow(class = "d-flex full‐height‐row",
            column(
              width = 12, class = "d-flex flex-column",
-             card("DJ Plans Go Here")))
+             card(
+               full_height = TRUE,
+               class = "flex-fill d-flex flex-column",
+               card_header("DJ Plans"),
+               card_body(
+                 class = "flex-fill d-flex flex-column",
+                 tableOutput("plannedDJ")
+               )
+             ))),
+  # fluidRow(class = "d-flex full‐height‐row",
+  #          column(
+  #            width = 12, class = "d-flex flex-column",
+  #            card(
+  #              full_height = TRUE,
+  #              class = "flex-fill d-flex flex-column",
+  #              card_header("Creel Results"),
+  #              card_body(
+  #                class = "flex-fill d-flex flex-column",
+  #                tableOutput("creelPressure")
+  #              )
+  #            )))
   
 )
 
 ## Server ----
-server <- function(input, output) {
+server <- function(input, output, session) {
   
     ### reactives ----
   rv<-reactiveValues()
@@ -121,11 +214,17 @@ server <- function(input, output) {
   rv$name<-NA
   rv$publicRecordId<-NA
   rv$gisLink<-NA
+  rv$samplingPlots<-NA
+  rv$currentPlot<-1
+  rv$surveySpecies<-NA
+  rv$surveyHistory<-NA
+  rv$dj_data<-NA
+  rv$stockings<-NA
   
-  #### set code values
+  #### set code values ----
   #get WbCode here...from querystring, if missing then show selection UI
   observe({
-    browser()
+    #browser()
     
     if(!is.null(getQueryString()$wb) && !is.na(getQueryString()$wb)) {
     rv$wb<-getQueryString()$wb
@@ -274,9 +373,60 @@ server <- function(input, output) {
     st_coordinates(ct)[1, ]
   })
 
+  #### dj data -----
+  observe({
+    rv$dj_data<- NGPC_getFDC_dj_bywaterbody(rv$wb) %>%
+      filter(activityCode < 1100 | activityCode > 1290) %>%
+      filter(activityCode != 2500) %>%
+      filter(activityYear>=year(now())) %>%
+      select(activityYear, activityMonth, activityName, comments) %>%
+      mutate(activityMonth=month.abb[activityMonth]) %>%
+      arrange(activityYear, activityMonth, activityName)
+  })
+  #### dj stockings -----
+  observe({
+    rv$dj_stockings<- NGPC_getFDC_dj_bywaterbody(rv$wb) %>%
+      filter(activityCode >= 1100 & activityCode <= 1290) %>%
+      filter(activityCode != 2500) %>%
+      filter(activityYear>=year(now())) %>%
+      select(activityYear, activityMonth, speciesCode, speciesName, sizeInInches,dayOfMonth, totalRequested, comments) %>%
+      mutate(activityMonth=month.abb[activityMonth],
+             species=paste0(speciesName, " (", speciesCode, ")"),
+             sizeInInches=paste0(sizeInInches, " in"),
+             totalRequested=format(totalRequested, big.mark=",")) %>%
+      arrange(activityYear, activityMonth, dayOfMonth, species) %>%
+      select(activityYear, activityMonth,species, sizeInInches, totalRequested, comments)
+  })
+  #### stockings -----
+  observe({
+    # rv$stockings<- NGPC_getFDC_stockings(myWaterbodyCode=rv$wb, myStartYear=year(now())-10) %>%
+    #   select(stkDate, stkSpeciesCode, speciesName, sizeCategoryName, stkSize, stkNumber) %>%
+    #   mutate(species=paste0(speciesName, " (", stkSpeciesCode, ")"),
+    #          stkSize=paste0(stkSize, " in"),
+    #          stkNumber=format(stkNumber, big.mark=","),
+    #          stkYear=year(stkDate),
+    #          stkDate=format(ymd_hms(stkDate), "%m-%d-%Y")) %>%
+    #   arrange(species, stkYear, sizeCategoryName) %>%
+    #   group_by(species, sizeCategoryName) %>%
+    #   summarise(details=paste(paste0(stkYear, " (", str_trim(stkNumber), " ", sizeCategoryName, ")"), collapse=", ")) %>%
+    #   arrange(species, sizeCategoryName) %>%
+    #   select(species, sizeCategoryName, details)
+    rv$stockings<- NGPC_getFDC_stockings(myWaterbodyCode=rv$wb, myStartYear=year(now())-10) %>%
+      select(stkDate, stkSpeciesCode, speciesName, sizeCategoryName, stkSize, stkNumber) %>%
+      mutate(species=paste0(speciesName, " (", stkSpeciesCode, ")"),
+             stkSize=paste0(stkSize, " in"),
+             stkNumber=format(stkNumber, big.mark=","),
+             stkYear=year(stkDate),
+             stkDate=format(ymd_hms(stkDate), "%m-%d-%Y")) %>%
+      arrange(species, stkYear, sizeCategoryName) %>%
+      group_by(species, sizeCategoryName) %>%
+      summarise(details=paste(stkYear, collapse=", ")) %>%
+      arrange(species, sizeCategoryName) %>%
+      select(species, sizeCategoryName, details)
+  })
   #### get contours ----
   getContours<-reactive({
-  #baseURL for  Forest Service invasive species API
+    browser()
   baseURL <- "https://services5.arcgis.com/IOshH1zLrIieqrNk/arcgis/rest/services/LakeContours/FeatureServer/0/query?"
   #convert bounding box to character
   bbox1 <- toString(bbox_of_polygon())
@@ -300,9 +450,78 @@ server <- function(input, output) {
     param_set(key="returnExtentOnly", value="false") %>%
     param_set(key="featureEncoding", value="esriDefault")
   
-  read_sf(query) %>% arrange(Depth)
+  raw<-GET(query)
+  txt<-content(raw, as="text", encoding="UTF-8")
+  read_sf(txt,
+          quiet  = TRUE) %>% arrange(Depth)
   })
   
+  
+  #### get sampling plots ----
+  observe({
+    req(rv$wb)
+    #get all surveys for a waterbody
+    v<-getData_surveys_filteredList(myCriteria=list("waterbodies"=list(rv$wb)))$content
+    
+    #save survey history
+    rv$surveyHistory<-v %>% 
+      group_by(svyMethodCode, svyMethodName, svySeasonCode, svySeasonName) %>%
+      arrange(svyYear) %>%
+      summarise(surveyYears=paste(svyYear, collapse=", ")) %>%
+      mutate(surveyMethod=paste0(svyMethodName, " (", svyMethodCode, ")")) %>%
+      ungroup() %>%
+      left_join(data.frame(svySeasonName=c("Spring", "Summer", "Fall", "Winter", "Early-Spring", "Year", "Unknown"),
+                           seasonSortOrder=c(2,3,4,5,1,6,7)), by=c("svySeasonName"="svySeasonName")) %>%
+      arrange(surveyMethod, seasonSortOrder) %>%
+      select(surveyMethod, surveySeason=svySeasonName, surveyYears) %>%
+      arrange(surveyMethod, surveySeason)
+    
+    #select most recent survey of each method and season and produce plots
+    do<-fcacc_filters$new()
+    do$set_surveys_filter( v %>%
+                              # filter(svyApproved==TRUE) %>%
+                              group_by(svySeasonCode, svySeasonName,
+                                       svyMethodCode, svyMethodName) %>%
+                              slice_max(svyYear, n = 1, with_ties = FALSE) %>%
+                              ungroup() %>%
+                              pull(svyUid))
+    myData<-fc_data$new(do)
+    op<-fca_CPUE_incremental(myData)
+    original_plots<-op$plots
+    
+    # Post‐process each ggplot in the list
+    processed_plots <- lapply(original_plots, function(p) {
+      old_sub <- p$labels$subtitle %||% ""
+
+      # extract each field0
+      method  <- as.integer(str_match(old_sub, "Method=([^;\\s]+)")[,2]) %>% fc_matchCodes(getCodes_method() %>% select(code=methodCode, text=methodName), asFactor=FALSE)
+      season  <- str_match(old_sub, "Season=([^;\\s\\)]+)")[,2]
+      year    <- str_match(old_sub, "Year=([^;\\s]+)")[,2]
+      
+      # if we got all three, build a new title
+      if (!any(is.na(c(method, season, year)))) {
+        new_title <- sprintf("%s %s", season, year)
+        new_subtitle <- method
+        p <- p +
+          labs(
+            title    = new_title,
+            subtitle = new_subtitle
+          ) +
+          theme(
+            plot.title    = element_text(size = 16, face = "bold"),
+            plot.subtitle = element_text(size = 12, face = "italic")
+          )
+      }
+      
+      p
+    })
+    # 3) now write once to the reactiveValue
+    rv$samplingPlots <- processed_plots
+    
+    
+    #while we have surveys being processed...get species present
+    rv$surveySpecies<-sort(myData$calc_speciesInAnalysisData %>% rename(code=speciesCode) %>% pull(code) %>% unique() %>% fc_matchCodes(getCodes_species() %>% select(code=speciesCode, text=speciesName) %>% mutate(text=paste0(text, " (", code, ")")), asFactor=FALSE))
+  })
   
   ### outputs ----
   #### wbInfo_Code ----
@@ -340,6 +559,95 @@ server <- function(input, output) {
       # otherwise render
       tags$div(style = "margin-bottom: 2px;", HTML(sprintf("<b>%s:</b> %s", key, val)))
     }))
+  })
+  #### surveySpecies ----
+  output$surveySpecies <- renderUI({
+      paste(rv$surveySpecies, collapse=", ")
+  })
+  
+  #### dj plans ----
+  output$plannedDJ <- renderTable({
+    rv$dj_data
+  },
+    striped=TRUE,
+    colnames=FALSE
+  )
+  # #### creel pressure ----
+  # output$creelPressure <-renderPlot({
+  #   library(ngpcHistoricCreel)
+  #   
+  #   creels<-creel_getCreels()
+  #   m<-foreach(intX=seq(1,nrow(creels)-1,3), .combine="rbind") %do% {
+  #     creel_getData_designGeneral(ids[seq(intX,intX+2,1),] %>% pull(Creel_UID)%>% paste(.,collapse=", ")) %>% filter(dg_WaterbodyCode==5110)
+  #     #if(nrow(op)>0) {return (op$dg_CreelUID)}
+  #   } 
+  #   n<-foreach(intX=seq(1,nrow(m)-1,3), .combine="rbind") %do% {
+  #     op<-creel_getResults(m[seq(intX,intX+2,1),] %>% pull(dg_CreelUID) %>% paste(.,collapse=", ")) %>% 
+  #       filter(r_Parameter %in% c(1,2,3)) %>% filter(r_AnglerType==4 & r_AnglerMethod==5) 
+  #     #if(nrow(op)>0) {return (op$dg_CreelUID)}
+  #   } 
+  #   pressure <- n %>% group_by(r_CreelUID) %>% filter(r_Parameter==1) %>% filter(r_Species==0) %>% 
+  #     summarise(Pressure=sum(r_Value, na.rm=TRUE)) %>% 
+  #     left_join(m %>% select(dg_CreelUID, dg_CreelStartDate) %>% 
+  #                 mutate(Year=year(ymd_hms(dg_CreelStartDate))), by=c("r_CreelUID"="dg_CreelUID")) %>%
+  #     left_join(creels %>% select(Creel_UID, Creel_Title), by=c("r_CreelUID"="Creel_UID")) %>%
+  #     arrange(Year) %>%
+  #     select(Year, Creel_Title, Pressure) 
+  #   
+  #   library(scales)
+  #   pressure %>%
+  #     ggplot() +
+  #     geom_bar(aes(x=Creel_Title, y=Pressure), stat="identity", fill="blue", color="blue") +
+  #     coord_flip() +
+  #     scale_y_continuous(labels = comma)+
+  #     labs(x="", y="Angler-Hours") +
+  #     theme_minimal() +
+  #     theme(panel.grid.major.y = element_blank())
+  # })
+  #### dj stockings ----
+  output$plannedStockings <- renderTable({
+    rv$dj_stockings
+  },
+  striped=TRUE,
+  colnames=FALSE
+  )
+  #### stockings ----
+  output$stockings <- renderTable({
+    rv$stockings
+  },
+  striped=TRUE,
+  colnames=FALSE
+  )
+  #### Stockings TImeline ----
+  output$stockingTimelineScript <- renderUI({
+    # grab the waterbody code from your reactiveValues
+    wb <- rv$wb
+    
+    # emit a <script> that does exactly what your standalone HTML did,
+    # but targeting rv$wb and our #stockingDiv
+    tags$script(HTML(sprintf("
+      function updateTimeline() {
+        $('#stockingDiv').empty();
+        $.ajax({
+          url: 'https://fishstaff.outdoornebraska.gov/staffapi/fdc/GetStockingsPublicWaterbody?wb=%s',
+          type: 'GET',
+          success: function(data) {
+            createStoryJS({
+              width       : '100%%',
+              height      : '600',
+              source      : data,
+              embed_id    : 'stockingDiv',
+              start_at_end: true
+            });
+          }
+        });
+      }
+
+      // fire it on initial load
+      $(document).ready(function() {
+        updateTimeline();
+      });
+    ", wb)))
   })
   
   #### leaflet_polygon ----
@@ -443,15 +751,15 @@ server <- function(input, output) {
       #     transparent = TRUE
       #   )
       # ) %>%
+      # addWMSTiles(
+      #   baseUrl = "https://services5.arcgis.com/IOshH1zLrIieqrNk/arcgis/rest/services/LakeContours/FeatureServer/0/query?outFields=*&where=1%3D1",
+      #   layers  = "conus_base_reflectivity_mosaic",
+      #   group="Radar",
+      #   options = WMSTileOptions(
+      #     format      = "image/png",
+      #     transparent = TRUE
+      #   )) %>% 
       addWMSTiles(
-        baseUrl = "https://services5.arcgis.com/IOshH1zLrIieqrNk/arcgis/rest/services/LakeContours/FeatureServer/0/query?outFields=*&where=1%3D1",
-        layers  = "conus_base_reflectivity_mosaic",
-        group="Radar",
-        options = WMSTileOptions(
-          format      = "image/png",
-          transparent = TRUE
-        )
-      ) %>%addWMSTiles(
         baseUrl = "https://nowcoast.noaa.gov/geoserver/observations/weather_radar/ows",
         layers  = "conus_base_reflectivity_mosaic",
         group="Radar",
@@ -470,6 +778,7 @@ server <- function(input, output) {
         )
       ) %>%
       addLayersControl(overlayGroups=c("Radar", "Lightning", "Watches and Warnings")) %>%
+      hideGroup(c("Radar", "Radar2", "Lightning", "Watches and Warnings")) %>%
       leaflet.extras::activateGPS()  %>% 
       leaflet.extras::addControlGPS(options=gpsOptions(autoCenter=TRUE, setView=TRUE)) %>%# show both your current location control and the lake marker
       addMarkers(lng = dest[1], lat = dest[2], label = rv$name) %>%
@@ -480,6 +789,51 @@ server <- function(input, output) {
         lat2 = max(st_bbox(geo_data())$ymax)
       )
   })
+  
+  #### output CPUE plots ----
+  output$selectedCPUE <- renderPlot({
+    idx <- rv$currentPlot
+    req(rv$samplingPlots, rv$samplingPlots[[idx]])
+    rv$samplingPlots[[idx]]
+  }, res = 96)  # adjust DPI if you like
+  
+    # 4. Update index when a dot is clicked
+  observe({
+    req(rv$samplingPlots)
+    n <- length(rv$samplingPlots)
+    lapply(seq_len(n), function(i) {
+      # create an observer for each input$dot_i
+      observeEvent(input[[paste0("dot", i)]], {
+        rv$currentPlot=i
+      }, ignoreInit = TRUE)
+    })
+  })
+  
+  output$cpueDots <- renderUI({
+    req(rv$samplingPlots)
+    n <- length(rv$samplingPlots)
+    idx <- rv$currentPlot
+    
+    # generate one actionLink() per plot
+    tags$div(
+      style = "text-align: center; margin-top: 0px;",
+      lapply(seq_len(n), function(i) {
+        actionLink(
+          inputId = paste0("dot", i),
+          label   = HTML(if (i == idx) "&#9679;" else "&#9675;"),
+          style   = "font-size: 24px; margin: 0 5px; color: #007bff; text-decoration:none;"
+        )
+      })
+    )
+  })
+
+  #### survey History ----
+  output$surveyHistory <- renderTable(
+    rv$surveyHistory,
+    striped=TRUE,
+    colnames=FALSE
+ )
+  
   
   
   ## ---- Navigation button ----
@@ -499,47 +853,8 @@ server <- function(input, output) {
     )
   })
  
-  
-  # observeEvent(input$leaflet_contours_shape_click, {
-  #   browser()
-  #   click <- input$leaflet_contours_shape_click
-  #   
-  #   # 3) Extract the clicked contour’s attributes
-  #   clicked_id  <- click$id
-  #   clicked_pt  <- c(click$lng, click$lat)
-  #   df          <- getContours()
-  #   sel_polygon <- df[df$OBJECTID == clicked_id, ]
-  #   
-  #   # Show some info in the UI (or do whatever you like with sel_polygon)
-  #   output$click_info <- renderPrint({
-  #     cat("You clicked on contour_id:", clicked_id, "\n")
-  #     print(st_geometry(sel_polygon))       # geometry
-  #     print(st_drop_geometry(sel_polygon))  # all other attributes
-  #   })
-  # })
+   }
   
   
-  # # observe the geo_data and update the map
-  # observeEvent(geo_data(), {
-  #   df <- geo_data()
-  #   req(nrow(df) > 0)
-  # 
-  #   leafletProxy("leaflet_polygon", data = df) %>%
-  #     clearShapes() %>%
-  #     addPolygons(
-  #       color   = "blue",
-  #       weight  = 2,
-  #       fillOpacity = 0.3
-  #     ) %>%
-  #     fitBounds(
-  #       lng1 = min(st_bbox(df)$xmin),
-  #       lat1 = min(st_bbox(df)$ymin),
-  #       lng2 = max(st_bbox(df)$xmax),
-  #       lat2 = max(st_bbox(df)$ymax)
-  #     )
-  # })
-
-}
-
 # Run the application
 shinyApp(ui = ui, server = server)
