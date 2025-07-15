@@ -8,6 +8,7 @@ library(lubridate)
 library(stringr)
 library(rlist)
 library(bslib)
+library(shinyWidgets)
 library(leaflet)
 library(leaflet.extras)
 library(sf)
@@ -23,6 +24,7 @@ ui <- fluidPage(
   title = "Waterbody Title and Name Here",
   style = "background-color: #d6eaf8; padding: 20px;",
   theme = bs_theme(version = 5),
+  useSweetAlert(),
   ### head tags ----
   tags$head(
     tags$head(
@@ -106,31 +108,32 @@ ui <- fluidPage(
       card(full_height = TRUE, class = "flex-fill", card_header("Species Observed"), card_body(uiOutput("surveySpecies")))
     ),
   ),
-  fluidRow(
-    column(
-      width = 12,
-      card(
-        full_height = TRUE,
-        class = "flex-fill d-flex flex-column",
-        card_header("Recent Sampling Results"),
-        card_body(
-          class = "flex-fill d-flex flex-column",
-          
-          # a) the plot
-          plotOutput("selectedCPUE", height = "60vh", width = "100%"),
-          
-          # b) the dots
-          uiOutput("cpueDots")
-        )
-      )
-    )
-  ),
+  # fluidRow(
+  #   column(
+  #     width = 12,
+  #     card(
+  #       full_height = TRUE,
+  #       class = "flex-fill d-flex flex-column",
+  #       card_header("Recent Sampling Results"),
+  #       card_body(
+  #         class = "flex-fill d-flex flex-column",
+  #         
+  #         # a) the plot
+  #         plotOutput("selectedCPUE", height = "60vh", width = "100%"),
+  #         
+  #         # b) the dots
+  #         uiOutput("cpueDots")
+  #       )
+  #     )
+  #   )
+  # ),
+  uiOutput("cpue_card"),
   fluidRow(class = "d-flex full‐height‐row",
            column(
              width = 6, class = "d-flex flex-column",
              card(          full_height = TRUE,
                             class = "flex-fill d-flex flex-column",
-                            card_header("Stockings"),
+                            card_header("Stockings (Last 10 Years)"),
                             card_body(
                               class = "flex-fill d-flex flex-column",
                               tableOutput("stockings"),
@@ -220,21 +223,46 @@ server <- function(input, output, session) {
   rv$surveyHistory<-NA
   rv$dj_data<-NA
   rv$stockings<-NA
+  rv$contours<-NA
   
   #### set code values ----
   #get WbCode here...from querystring, if missing then show selection UI
   observe({
-    #browser()
-    
+
     if(!is.null(getQueryString()$wb) && !is.na(getQueryString()$wb)) {
     rv$wb<-getQueryString()$wb
   } else {
     rv$wb<-5555
   }
   
-    rv$name=NGPC_getCodes_waterbody_byCode(rv$wb)$waterbodyName
-    rv$publicRecordId=NGPC_getCodes_waterbody_byCode(rv$wb)$publicWaterRecordId
-    rv$gisLink=(NGPC_getCodes_waterbodyGisLinks_all() %>% filter(waterbodyCode==rv$wb) %>% pull(geometryId))[[1]]
+
+    wb_info <- tryCatch(
+      NGPC_getCodes_waterbody_byCode(rv$wb),
+      error = function(e) NULL
+    )
+    
+    # if nothing came back, alert and stop here
+    if ( 
+      is.null(wb_info) ||
+        length((wb_info)) == 0 ||
+        is.null(wb_info$waterbodyName) ||
+        is.na(wb_info$waterbodyName) ) {
+      
+      sendSweetAlert(
+        session = session,
+        title   = "Waterbody Not Found",
+        text    = glue::glue("No waterbody found for code {rv$wb}."),
+        type    = "error"
+      )
+      return()
+    }
+    
+    # otherwise, populate your reactives
+    rv$name           <- wb_info$waterbodyName
+    rv$publicRecordId <- wb_info$publicWaterRecordId
+    rv$gisLink        <- (NGPC_getCodes_waterbodyGisLinks_all() %>%
+                            filter(waterbodyCode == rv$wb) %>%
+                            pull(geometryId))[1]
   })
   
   #### getWbInfo_Code ----
@@ -303,13 +331,20 @@ server <- function(input, output, session) {
   
   #### getWbInfo_Public ----
   getWbInfo_Public <- reactive({
-    req(rv$publicRecordId)
+    if(!is.na(rv$publicRecordId) && !is.null(rv$publicRecordId)) {
     wbInfo_Public <- NGPC_getCodes_waterbodyCodesPublic_byCode(rv$publicRecordId)
-    wbInfo_PublicAttributes <- NGPC_getCodes_waterbodyCodesPublicAttributes_byPublicRecordId(rv$publicRecordId) %>%
-      left_join(NGPC_getCodes_waterbodyCodesPublicAttributeTypes_all() %>% select(attributeUid, attributeGuideText), by=c("pwaAttributeUid"="attributeUid")) %>%
-      group_by(pwaRecordId) %>%
-      summarise(Attributes=paste(attributeGuideText, collapse=", "))
+    wbInfo_PublicAttributes <- NGPC_getCodes_waterbodyCodesPublicAttributes_byPublicRecordId(rv$publicRecordId)
+    if(length(wbInfo_PublicAttributes)>0){
+      wbInfo_PublicAttributes <- wbInfo_PublicAttributes %>%       
+        left_join(NGPC_getCodes_waterbodyCodesPublicAttributeTypes_all() %>% select(attributeUid, attributeGuideText), by=c("pwaAttributeUid"="attributeUid")) %>%
+        group_by(pwaRecordId) %>%
+        summarise(Attributes=paste(attributeGuideText, collapse=", "))
+      
+    } else {
+      wbInfo_PublicAttributes <- NULL
+    }
     
+
     if (!is.null(wbInfo_Public$accessType) &&
         !is.na(wbInfo_Public$accessType)) {
       wbInfo_Public <- c(wbInfo_Public,
@@ -344,7 +379,13 @@ server <- function(input, output, session) {
         "Boating Regulationss",
         "Comments"
       )
-    )
+    )}
+    else
+    {
+      NULL
+    }
+    
+    
   })
   
   #### get public polygon data ----
@@ -375,17 +416,23 @@ server <- function(input, output, session) {
 
   #### dj data -----
   observe({
-    rv$dj_data<- NGPC_getFDC_dj_bywaterbody(rv$wb) %>%
+    tmp <- NGPC_getFDC_dj_bywaterbody(rv$wb) %>%
       filter(activityCode < 1100 | activityCode > 1290) %>%
       filter(activityCode != 2500) %>%
       filter(activityYear>=year(now())) %>%
       select(activityYear, activityMonth, activityName, comments) %>%
       mutate(activityMonth=month.abb[activityMonth]) %>%
       arrange(activityYear, activityMonth, activityName)
+    
+    if (is.null(tmp) || (is.data.frame(tmp) && nrow(tmp)==0)) {
+      rv$dj_data <- NULL
+    } else {
+      rv$dj_data <- tmp
+    }
   })
   #### dj stockings -----
   observe({
-    rv$dj_stockings<- NGPC_getFDC_dj_bywaterbody(rv$wb) %>%
+    tmp<- NGPC_getFDC_dj_bywaterbody(rv$wb) %>%
       filter(activityCode >= 1100 & activityCode <= 1290) %>%
       filter(activityCode != 2500) %>%
       filter(activityYear>=year(now())) %>%
@@ -396,37 +443,35 @@ server <- function(input, output, session) {
              totalRequested=format(totalRequested, big.mark=",")) %>%
       arrange(activityYear, activityMonth, dayOfMonth, species) %>%
       select(activityYear, activityMonth,species, sizeInInches, totalRequested, comments)
+    
+    if (is.null(tmp) || (is.data.frame(tmp) && nrow(tmp)==0)) {
+      rv$dj_stockings <- NULL
+    } else {
+      rv$dj_stockings <- tmp
+    }
   })
   #### stockings -----
   observe({
-    # rv$stockings<- NGPC_getFDC_stockings(myWaterbodyCode=rv$wb, myStartYear=year(now())-10) %>%
-    #   select(stkDate, stkSpeciesCode, speciesName, sizeCategoryName, stkSize, stkNumber) %>%
-    #   mutate(species=paste0(speciesName, " (", stkSpeciesCode, ")"),
-    #          stkSize=paste0(stkSize, " in"),
-    #          stkNumber=format(stkNumber, big.mark=","),
-    #          stkYear=year(stkDate),
-    #          stkDate=format(ymd_hms(stkDate), "%m-%d-%Y")) %>%
-    #   arrange(species, stkYear, sizeCategoryName) %>%
-    #   group_by(species, sizeCategoryName) %>%
-    #   summarise(details=paste(paste0(stkYear, " (", str_trim(stkNumber), " ", sizeCategoryName, ")"), collapse=", ")) %>%
-    #   arrange(species, sizeCategoryName) %>%
-    #   select(species, sizeCategoryName, details)
-    rv$stockings<- NGPC_getFDC_stockings(myWaterbodyCode=rv$wb, myStartYear=year(now())-10) %>%
-      select(stkDate, stkSpeciesCode, speciesName, sizeCategoryName, stkSize, stkNumber) %>%
-      mutate(species=paste0(speciesName, " (", stkSpeciesCode, ")"),
-             stkSize=paste0(stkSize, " in"),
-             stkNumber=format(stkNumber, big.mark=","),
-             stkYear=year(stkDate),
-             stkDate=format(ymd_hms(stkDate), "%m-%d-%Y")) %>%
-      arrange(species, stkYear, sizeCategoryName) %>%
-      group_by(species, sizeCategoryName) %>%
-      summarise(details=paste(stkYear, collapse=", ")) %>%
-      arrange(species, sizeCategoryName) %>%
-      select(species, sizeCategoryName, details)
+    tmp<- NGPC_getFDC_stockings(myWaterbodyCode=rv$wb, myStartYear=year(now())-10) 
+    if (is.null(tmp) || (is.data.frame(tmp) && nrow(tmp)==0) || is.list(tmp) && !is.data.frame(tmp)) {
+      rv$stockings <- NULL
+    } else {
+      rv$stockings <- tmp %>%
+        select(stkDate, stkSpeciesCode, speciesName, sizeCategoryName, stkSize, stkNumber) %>%
+        mutate(species=paste0(speciesName, " (", stkSpeciesCode, ")"),
+               stkSize=paste0(stkSize, " in"),
+               stkNumber=format(stkNumber, big.mark=","),
+               stkYear=year(stkDate),
+               stkDate=format(ymd_hms(stkDate), "%m-%d-%Y")) %>%
+        arrange(species, stkYear, sizeCategoryName) %>%
+        group_by(species, sizeCategoryName) %>%
+        summarise(details=paste(stkYear, collapse=", ")) %>%
+        arrange(species, sizeCategoryName) %>%
+        select(species, sizeCategoryName, details)
+    }
   })
   #### get contours ----
   getContours<-reactive({
-    browser()
   baseURL <- "https://services5.arcgis.com/IOshH1zLrIieqrNk/arcgis/rest/services/LakeContours/FeatureServer/0/query?"
   #convert bounding box to character
   bbox1 <- toString(bbox_of_polygon())
@@ -452,19 +497,26 @@ server <- function(input, output, session) {
   
   raw<-GET(query)
   txt<-content(raw, as="text", encoding="UTF-8")
-  read_sf(txt,
-          quiet  = TRUE) %>% arrange(Depth)
+  op<-read_sf(txt,
+          quiet  = TRUE)
+  if(nrow(op)>0) {
+    rv$contours <- op  %>% arrange(Depth)
+  } else {
+    rv$contours <- NULL
+  }
   })
   
   
   #### get sampling plots ----
   observe({
     req(rv$wb)
+    
     #get all surveys for a waterbody
     v<-getData_surveys_filteredList(myCriteria=list("waterbodies"=list(rv$wb)))$content
-    
+
+    if(length(v)>0 ) {
     #save survey history
-    rv$surveyHistory<-v %>% 
+    tmp<-v %>% 
       group_by(svyMethodCode, svyMethodName, svySeasonCode, svySeasonName) %>%
       arrange(svyYear) %>%
       summarise(surveyYears=paste(svyYear, collapse=", ")) %>%
@@ -475,6 +527,12 @@ server <- function(input, output, session) {
       arrange(surveyMethod, seasonSortOrder) %>%
       select(surveyMethod, surveySeason=svySeasonName, surveyYears) %>%
       arrange(surveyMethod, surveySeason)
+    
+    if (is.null(tmp) || (is.data.frame(tmp) && nrow(tmp)==0)) {
+      rv$surveyHistory <- NULL
+    } else {
+      rv$surveyHistory <- tmp
+    }
     
     #select most recent survey of each method and season and produce plots
     do<-fcacc_filters$new()
@@ -517,10 +575,14 @@ server <- function(input, output, session) {
     })
     # 3) now write once to the reactiveValue
     rv$samplingPlots <- processed_plots
-    
-    
     #while we have surveys being processed...get species present
     rv$surveySpecies<-sort(myData$calc_speciesInAnalysisData %>% rename(code=speciesCode) %>% pull(code) %>% unique() %>% fc_matchCodes(getCodes_species() %>% select(code=speciesCode, text=speciesName) %>% mutate(text=paste0(text, " (", code, ")")), asFactor=FALSE))
+    
+    }
+        else {
+          rv$surveyHistory=NULL
+          rv$surveySpecies=NULL
+        }
   })
   
   ### outputs ----
@@ -545,6 +607,7 @@ server <- function(input, output, session) {
   #### wbInfo_Public ----
   output$wbInfo_Public <- renderUI({
     info <- getWbInfo_Public()        # call the reactive
+    if(any(!is.na(info)) && !is.null(info)) {
     tagList(lapply(names(info), function(key) {
       val <- info[[key]]
       
@@ -559,14 +622,25 @@ server <- function(input, output, session) {
       # otherwise render
       tags$div(style = "margin-bottom: 2px;", HTML(sprintf("<b>%s:</b> %s", key, val)))
     }))
+    } else {
+      "No data exists"
+    }
   })
   #### surveySpecies ----
   output$surveySpecies <- renderUI({
+    if(!is.null(rv$surveySpecies) && length(rv$surveySpecies)>0) {
       paste(rv$surveySpecies, collapse=", ")
+    } else {
+      "No data exists"
+    }
   })
   
   #### dj plans ----
   output$plannedDJ <- renderTable({
+    if (is.null(rv$dj_data) || nrow(rv$dj_data) == 0) {
+      # return a one‐row data.frame so that the card shows your message
+      return(data.frame(` ` = "No data exists."))
+    }
     rv$dj_data
   },
     striped=TRUE,
@@ -606,14 +680,22 @@ server <- function(input, output, session) {
   # })
   #### dj stockings ----
   output$plannedStockings <- renderTable({
+
+    if (is.null(rv$dj_stockings) || nrow(rv$dj_stockings) == 0) {
+      # return a one‐row data.frame so that the card shows your message
+      return(data.frame(` ` = "No data exists."))
+    }
     rv$dj_stockings
-  },
-  striped=TRUE,
-  colnames=FALSE
-  )
+  }, striped = TRUE, colnames = FALSE)
+
   #### stockings ----
   output$stockings <- renderTable({
-    rv$stockings
+    if (any(!is.na(rv$stockings)) || !is.null(rv$stockings)) {
+          rv$stockings
+} else {
+      # return a one‐row data.frame so that the card shows your message
+      return(data.frame(` ` = "No data exists."))
+    }
   },
   striped=TRUE,
   colnames=FALSE
@@ -621,7 +703,9 @@ server <- function(input, output, session) {
   #### Stockings TImeline ----
   output$stockingTimelineScript <- renderUI({
     # grab the waterbody code from your reactiveValues
+
     wb <- rv$wb
+
     
     # emit a <script> that does exactly what your standalone HTML did,
     # but targeting rv$wb and our #stockingDiv
@@ -688,11 +772,13 @@ server <- function(input, output, session) {
   
   #### leaflet_contours ----
   output$leaflet_contours <- renderLeaflet({
-    req(geo_data())
+    getContours()
+    req(geo_data(), rv$contours)
+    
     leaflet() %>%
       addProviderTiles("Esri.WorldImagery")%>%
       clearShapes() %>%
-      addPolygons(data=getContours(),
+      addPolygons(data=rv$contours,
                   layerId      = ~OBJECTID,
                   color   = "blue",
                   weight  = 2,
@@ -827,9 +913,38 @@ server <- function(input, output, session) {
     )
   })
 
+  output$cpue_card <- renderUI({
+    # If there are no plots, return NULL → hides the card entirely
+    if (any(is.na(rv$samplingPlots)) || is.null(rv$samplingPlots) || length(rv$samplingPlots) == 0) {
+      return(NULL)
+    }
+    
+    # Otherwise, render exactly the same card you had before
+    fluidRow(
+      column(
+        width = 12,
+        card(
+          full_height = TRUE,
+          class = "flex-fill d-flex flex-column",
+          card_header("Recent Sampling Results"),
+          card_body(
+            class = "flex-fill d-flex flex-column",
+            plotOutput("selectedCPUE", height = "60vh", width = "100%"),
+            uiOutput("cpueDots")
+          )
+        )
+      )
+    )
+  })
+  
   #### survey History ----
-  output$surveyHistory <- renderTable(
-    rv$surveyHistory,
+  output$surveyHistory <- renderTable({
+    if (is.null(rv$surveyHistory)) {
+      # return a one‐row data.frame so that the card shows your message
+      return(data.frame(` ` = "No data exists."))
+    }
+    rv$surveyHistory
+    },
     striped=TRUE,
     colnames=FALSE
  )
