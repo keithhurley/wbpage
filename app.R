@@ -15,19 +15,27 @@ library(sf)
 library(urltools)
 library(ngpcFisheries)
 library(FinCatchAnalysis)
-
+library(shinyjs)
+library(shinybusy)
 
 
 ## UI ----
 # Define UI for application that draws a histogram
 ui <- fluidPage(
-  title = "Waterbody Title and Name Here",
+  useShinyjs(), 
+  # this injects a full‐page spinner any time Shiny is busy
+  add_busy_spinner(spin = "fading-circle", position = "full-page"),
+  title = "Waterbody Info Page",
   style = "background-color: #d6eaf8; padding: 20px;",
   theme = bs_theme(version = 5),
   useSweetAlert(),
   ### head tags ----
   tags$head(
-    tags$head(
+    tags$script(HTML("
+      Shiny.addCustomMessageHandler('pageTitle', function(title) {
+        document.title = title;
+      });
+    ")),
       tags$link(rel = "stylesheet", href = "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css")
     ),
     tags$link(
@@ -73,30 +81,54 @@ ui <- fluidPage(
       
       /* ensure the row itself is full‐height if you want viewport‐based sizing */
       .full‐height‐row { height: 100%; }
+      
+      .btn-circle {
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        text-align: center;
+        font-size: 20px;
+        line-height: 1.2;
+      }
     "
       )
-    )
-  ),
+      ),
+absolutePanel(
+  top = 10, right = 10, width = "auto", draggable = FALSE,
+  style = "z-index: 9999;",
+  actionButton("reset_wb", label = NULL,
+               icon = icon("redo"),
+               class = "btn-primary btn-circle")
+),
   ### UI Start ----
   fluidRow(
     class = "d-flex full‐height‐row",
     column(width = 12)), # titlePanel("Waterbody Info"))),
   fluidRow(column(
     width = 6, class = "d-flex flex-column",
-    card(full_height = TRUE, class = "flex-fill mb-2", card_header(class="myHeader", "Waterbody Info"), card_body(uiOutput("wbInfo_Code"))),
+    card(full_height = TRUE, class = "flex-fill mb-2", card_header(class="myHeader", "Waterbody Info"), 
+         card_body(
+             uiOutput("wbInfo_Code"),
+                   )
+         ),
     card(full_height = TRUE, class = "flex-fill", card_header("Public Access Info"), card_body(uiOutput("wbInfo_Public")))
   ), column(
     width = 6, class = "d-flex flex-column",
     card(full_height = TRUE, class = "flex-fill",
-         card_body(tabsetPanel(
-           tabPanel("Map", leafletOutput("leaflet_polygon", height="800px")),
-           tabPanel("Imagery", leafletOutput("leaflet_imagery", height="800px")),
-           tabPanel("Contours", leafletOutput("leaflet_contours", height="800px"), tags$p(tags$h5("*Hover for depth"))),
-           tabPanel("GPS/Weather", leafletOutput("leaflet_directions", height="800px"),
-                    # this button will launch Google Maps navigation on mobile/desktop
-                    tags$br(),
-                    uiOutput("nav_button"))
-         )))
+         # card_body(tabsetPanel(
+         #   tabPanel("Map", leafletOutput("leaflet_polygon", height="800px")),
+         #   tabPanel("Imagery", leafletOutput("leaflet_imagery", height="800px")),
+         #   tabPanel("Contours", leafletOutput("leaflet_contours", height="800px"), tags$p(tags$h5("*Hover for depth"))),
+         #   tabPanel("GPS/Weather", leafletOutput("leaflet_directions", height="800px"),
+         #            # this button will launch Google Maps navigation on mobile/desktop
+         #            tags$br(),
+         #            uiOutput("nav_button"))
+         # ))
+         card_body(
+           uiOutput("mapTabs")
+         )
+         )
   )),
   fluidRow(
     column(
@@ -213,7 +245,7 @@ server <- function(input, output, session) {
   
     ### reactives ----
   rv<-reactiveValues()
-  rv$wb<-NA
+  rv$wb<-NULL
   rv$name<-NA
   rv$publicRecordId<-NA
   rv$gisLink<-NA
@@ -223,19 +255,96 @@ server <- function(input, output, session) {
   rv$surveyHistory<-NA
   rv$dj_data<-NA
   rv$stockings<-NA
-  rv$contours<-NA
+  rv$contours<-NULL
+  
+  #### get possible wb codes ----
+  getWaterbodyList <- function() {
+    
+    NGPC_getCodes_waterbody_all() %>% filter(waterbodyCode < 7000) %>% filter(!waterbodyCode %in% c(1000,2000,3000,4000, 5000, 6000)) %>% filter(waterbodyCode>1000) %>% select(code=waterbodyCode, name=waterbodyName)
+    # dummy data frame; your real call might be:
+    #   ngpcFisheries::NGPC_getAllWaterbodies() %>% select(code = waterbodyCode, name = waterbodyName)
+    # data.frame(
+    #   code = c("1001","1002","5555","1234"),
+    #   name = c("Lake Alpha","River Beta","Default Lake","Pond Gamma"),
+    #   stringsAsFactors = FALSE
+    # )
+  }
+  
+  
   
   #### set code values ----
   #get WbCode here...from querystring, if missing then show selection UI
   observe({
 
-    if(!is.null(getQueryString()$wb) && !is.na(getQueryString()$wb)) {
-    rv$wb<-getQueryString()$wb
-  } else {
-    rv$wb<-5555
-  }
+     if(!is.null(getQueryString()$wb) && !is.na(getQueryString()$wb)) {
+     rv$wb<-getQueryString()$wb
+   } else {
+     # fetch waterbody list
+     wb_list <- getWaterbodyList()
+     # build choices in "code — name" format
+     choices <- setNames(wb_list$code,
+                         paste0(wb_list$code, " \u2014 ", wb_list$name))
+     # show modal
+     showModal(
+       modalDialog(
+         title = "Select a Waterbody",
+         pickerInput(
+           inputId  = "wb_pick",
+           choices  = choices,                 # your named vector: names=“1001 — Lake Alpha”, values=“1001”
+           multiple = FALSE,
+           options  = list(
+             `live-search`    = TRUE,         # <-- turns on the filter box
+             `live-search-placeholder` = "Start typing a code or name...",
+             size             = 6            # how many rows to show
+           ),
+           width    = "100%"
+         ),
+         footer = tagList(
+           #modalButton("Cancel"),
+           actionButton("wb_pick_ok", "Go", class = "btn-primary")
+         ),
+         easyClose = FALSE
+       )
+     )
+     
+     # when they click Go, remove modal and reload with new wb=
+     observeEvent(input$wb_pick_ok, {
+       req(input$wb_pick)
+       removeModal()
+       rv$wb <- input$wb_pick
+     }, ignoreInit = TRUE)
+   }
+  })
   
-
+    #this will only run the rest of app if there is a wb code
+  observe({
+    req(rv$wb)
+   
+    # whenever rv$name changes, push it into the browser tab
+    session$sendCustomMessage("pageTitle", rv$name)
+    
+    # wire up the “choose a new waterbody” button
+    observeEvent(input$reset_wb, {
+      # # clear out your wb so your modal logic fires again
+      # rv$wb <- NULL
+      # # drop the wb=… from the URL so that on reload the app shows the modal
+      # session$reload(loadUrl = session$clientData$url_pathname)
+      
+      # 
+      # # 1) Clear the querystring in the browser (removes ?wb=...)
+      # updateQueryString("", mode = "replace")
+      # 
+      # # 2) Now reload the app at that clean URL
+      # session$reload()
+      
+      
+      # clear out your rv so nothing is “selected”
+      rv$wb <- NULL
+      
+      # and use JS to navigate to the same page without any querystring:
+      runjs("window.location.href = window.location.origin + window.location.pathname;")
+    })
+    
     wb_info <- tryCatch(
       NGPC_getCodes_waterbody_byCode(rv$wb),
       error = function(e) NULL
@@ -263,7 +372,7 @@ server <- function(input, output, session) {
     rv$gisLink        <- (NGPC_getCodes_waterbodyGisLinks_all() %>%
                             filter(waterbodyCode == rv$wb) %>%
                             pull(geometryId))[1]
-  })
+
   
   #### getWbInfo_Code ----
   getWbInfo_Code <- reactive({
@@ -454,6 +563,7 @@ server <- function(input, output, session) {
   observe({
     tmp<- NGPC_getFDC_stockings(myWaterbodyCode=rv$wb, myStartYear=year(now())-10) 
     if (is.null(tmp) || (is.data.frame(tmp) && nrow(tmp)==0) || is.list(tmp) && !is.data.frame(tmp)) {
+
       rv$stockings <- NULL
     } else {
       rv$stockings <- tmp %>%
@@ -696,6 +806,7 @@ server <- function(input, output, session) {
       # return a one‐row data.frame so that the card shows your message
       return(data.frame(` ` = "No data exists."))
     }
+
   },
   striped=TRUE,
   colnames=FALSE
@@ -732,6 +843,41 @@ server <- function(input, output, session) {
         updateTimeline();
       });
     ", wb)))
+  })
+  
+  #### make map tabs -----
+  #need this to be able to hide contours when they don't exist
+  output$mapTabs <- renderUI({
+    browser()
+    req(rv$wb) 
+    getContours()
+    
+# always have these two
+    tabs <- list(
+      tabPanel("Map",       leafletOutput("leaflet_polygon" , height="800px")),
+      tabPanel("Imagery",   leafletOutput("leaflet_imagery" , height="800px"))
+    )
+    
+    # only add Contours if we have drawn contours
+    if (!is.null(rv$contours)) {
+      tabs <- append(tabs, list(
+        tabPanel("Contours",
+                 leafletOutput("leaflet_contours", height="800px"),
+                 tags$p("*Hover for depth*")
+        )
+      ))
+    }
+    
+    # always have GPS/Weather last
+    tabs <- append(tabs, list(
+      tabPanel("GPS/Weather",
+               leafletOutput("leaflet_directions", height="800px"),
+               tags$br(),
+               uiOutput("nav_button")
+      )
+    ))
+    
+    do.call(tabsetPanel, tabs)
   })
   
   #### leaflet_polygon ----
@@ -967,9 +1113,9 @@ server <- function(input, output, session) {
       "Begin Navigation"
     )
   })
- 
-   }
-  
+
+})
+  }
   
 # Run the application
 shinyApp(ui = ui, server = server)
