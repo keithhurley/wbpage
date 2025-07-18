@@ -644,8 +644,10 @@ server <- function(input, output, session) {
       rv$surveyHistory <- tmp
     }
     
-    #select most recent survey of each method and season and produce plots
-    do<-fcacc_filters$new()
+
+     #select most recent survey of each method and season and produce plots
+      do<-fcacc_filters$new()
+    
     do$set_surveys_filter( v %>%
                               # filter(svyApproved==TRUE) %>%
                               group_by(svySeasonCode, svySeasonName,
@@ -654,7 +656,26 @@ server <- function(input, output, session) {
                               ungroup() %>%
                               pull(svyUid))
     myData<-fc_data$new(do)
-    op<-fca_CPUE_incremental(myData)
+    tryCatch(
+      op<-fca_CPUE_incremental(myData),
+    error=function(e){
+      rv$samplingPlots=NULL
+      rv$surveyHistory=NULL
+      rv$surveySpecies=NULL
+      showNotification(
+        "Failed to generate CPUE plots: " %>% paste0(e$message),
+        type = "error", duration = 5
+      )
+      
+      NULL
+    }
+    )
+    
+    # if the call failed, op will be NULL → bail out of the observe
+    if (is.null(op)) {
+      return()
+    }
+    
     original_plots<-op$plots
     
     # Post‐process each ggplot in the list
@@ -683,11 +704,16 @@ server <- function(input, output, session) {
       
       p
     })
+    
     # 3) now write once to the reactiveValue
     rv$samplingPlots <- processed_plots
-    #while we have surveys being processed...get species present
-    rv$surveySpecies<-sort(myData$calc_speciesInAnalysisData %>% rename(code=speciesCode) %>% pull(code) %>% unique() %>% fc_matchCodes(getCodes_species() %>% select(code=speciesCode, text=speciesName) %>% mutate(text=paste0(text, " (", code, ")")), asFactor=FALSE))
     
+    #while we have surveys being processed...get species present
+    if(!is.null(myData$calc_speciesInAnalysisData) & !is.na(myData$calc_speciesInAnalysisData)){
+    
+  
+    rv$surveySpecies<-sort(myData$calc_speciesInAnalysisData %>% rename(code=speciesCode) %>% pull(code) %>% unique() %>% fc_matchCodes(getCodes_species() %>% select(code=speciesCode, text=speciesName) %>% mutate(text=paste0(text, " (", code, ")")), asFactor=FALSE))
+    }
     }
         else {
           rv$surveyHistory=NULL
@@ -848,7 +874,6 @@ server <- function(input, output, session) {
   #### make map tabs -----
   #need this to be able to hide contours when they don't exist
   output$mapTabs <- renderUI({
-    browser()
     req(rv$wb) 
     getContours()
     
