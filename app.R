@@ -709,7 +709,7 @@ server <- function(input, output, session) {
     rv$samplingPlots <- processed_plots
     
     #while we have surveys being processed...get species present
-    if(!is.null(myData$calc_speciesInAnalysisData) & !is.na(myData$calc_speciesInAnalysisData)){
+    if(!is.null(myData$calc_speciesInAnalysisData) & !any(is.na(myData$calc_speciesInAnalysisData))){
     
   
     rv$surveySpecies<-sort(myData$calc_speciesInAnalysisData %>% rename(code=speciesCode) %>% pull(code) %>% unique() %>% fc_matchCodes(getCodes_species() %>% select(code=speciesCode, text=speciesName) %>% mutate(text=paste0(text, " (", code, ")")), asFactor=FALSE))
