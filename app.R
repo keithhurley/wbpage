@@ -36,11 +36,12 @@ ui <- fluidPage(
         document.title = title;
       });
     ")),
-      tags$link(rel = "stylesheet", href = "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css")
+    #tags$link(rel = "stylesheet", href = "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css")
+    tags$link(rel = "stylesheet", href = "bootstrap-icons.css")
     ),
     tags$link(
       rel = "stylesheet",
-      href = "https://use.fontawesome.com/releases/v5.15.4/css/all.css",
+      href = "all.css",
       crossorigin = "anonymous"
     ),
     
@@ -194,10 +195,13 @@ absolutePanel(
           tags$head(
             tags$link(
               rel  = "stylesheet",
-              href = "https://cdn.knightlab.com/libs/timeline/latest/css/storyjs-embed.css"
+              #href = "https://cdn.knightlab.com/libs/timeline/latest/css/storyjs-embed.css"
+              href = "timeline.css"
             ),
             tags$script(
-              src = "https://cdn.knightlab.com/libs/timeline/latest/js/storyjs-embed.js"
+              #src = "https://cdn.knightlab.com/libs/timeline/latest/js/storyjs-embed.js"
+              src = "storyjs-embed.js"
+              
             )
           ),
           
@@ -225,18 +229,18 @@ absolutePanel(
                  tableOutput("plannedDJ")
                )
              ))),
-  # fluidRow(class = "d-flex full‐height‐row",
-  #          column(
-  #            width = 12, class = "d-flex flex-column",
-  #            card(
-  #              full_height = TRUE,
-  #              class = "flex-fill d-flex flex-column",
-  #              card_header("Creel Results"),
-  #              card_body(
-  #                class = "flex-fill d-flex flex-column",
-  #                tableOutput("creelPressure")
-  #              )
-  #            )))
+  fluidRow(class = "d-flex full‐height‐row",
+           column(
+             width = 12, class = "d-flex flex-column",
+             card(
+               full_height = TRUE,
+               class = "flex-fill d-flex flex-column",
+               card_header("Creel Results"),
+               card_body(
+                 class = "flex-fill d-flex flex-column",
+                 plotOutput("creelPressure")
+               )
+             )))
   
 )
 
@@ -783,37 +787,37 @@ server <- function(input, output, session) {
     colnames=FALSE
   )
   # #### creel pressure ----
-  # output$creelPressure <-renderPlot({
-  #   library(ngpcHistoricCreel)
-  #   
-  #   creels<-creel_getCreels()
-  #   m<-foreach(intX=seq(1,nrow(creels)-1,3), .combine="rbind") %do% {
-  #     creel_getData_designGeneral(ids[seq(intX,intX+2,1),] %>% pull(Creel_UID)%>% paste(.,collapse=", ")) %>% filter(dg_WaterbodyCode==5110)
-  #     #if(nrow(op)>0) {return (op$dg_CreelUID)}
-  #   } 
-  #   n<-foreach(intX=seq(1,nrow(m)-1,3), .combine="rbind") %do% {
-  #     op<-creel_getResults(m[seq(intX,intX+2,1),] %>% pull(dg_CreelUID) %>% paste(.,collapse=", ")) %>% 
-  #       filter(r_Parameter %in% c(1,2,3)) %>% filter(r_AnglerType==4 & r_AnglerMethod==5) 
-  #     #if(nrow(op)>0) {return (op$dg_CreelUID)}
-  #   } 
-  #   pressure <- n %>% group_by(r_CreelUID) %>% filter(r_Parameter==1) %>% filter(r_Species==0) %>% 
-  #     summarise(Pressure=sum(r_Value, na.rm=TRUE)) %>% 
-  #     left_join(m %>% select(dg_CreelUID, dg_CreelStartDate) %>% 
-  #                 mutate(Year=year(ymd_hms(dg_CreelStartDate))), by=c("r_CreelUID"="dg_CreelUID")) %>%
-  #     left_join(creels %>% select(Creel_UID, Creel_Title), by=c("r_CreelUID"="Creel_UID")) %>%
-  #     arrange(Year) %>%
-  #     select(Year, Creel_Title, Pressure) 
-  #   
-  #   library(scales)
-  #   pressure %>%
-  #     ggplot() +
-  #     geom_bar(aes(x=Creel_Title, y=Pressure), stat="identity", fill="blue", color="blue") +
-  #     coord_flip() +
-  #     scale_y_continuous(labels = comma)+
-  #     labs(x="", y="Angler-Hours") +
-  #     theme_minimal() +
-  #     theme(panel.grid.major.y = element_blank())
-  # })
+  output$creelPressure <-renderPlot({
+    library(ngpcHistoricCreel)
+
+    creels<-creel_getCreels()
+    m<-foreach(intX=seq(1,nrow(creels)-1,3), .combine="rbind") %do% {
+      creel_getData_designGeneral(ids[seq(intX,intX+2,1),] %>% pull(Creel_UID)%>% paste(.,collapse=", ")) %>% filter(dg_WaterbodyCode==5110)
+      #if(nrow(op)>0) {return (op$dg_CreelUID)}
+    }
+    n<-foreach(intX=seq(1,nrow(m)-1,3), .combine="rbind") %do% {
+      op<-creel_getResults(m[seq(intX,intX+2,1),] %>% pull(dg_CreelUID) %>% paste(.,collapse=", ")) %>%
+        filter(r_Parameter %in% c(1,2,3)) %>% filter(r_AnglerType==4 & r_AnglerMethod==5)
+      #if(nrow(op)>0) {return (op$dg_CreelUID)}
+    }
+    pressure <- n %>% group_by(r_CreelUID) %>% filter(r_Parameter==1) %>% filter(r_Species==0) %>%
+      summarise(Pressure=sum(r_Value, na.rm=TRUE)) %>%
+      left_join(m %>% select(dg_CreelUID, dg_CreelStartDate) %>%
+                  mutate(Year=year(ymd_hms(dg_CreelStartDate))), by=c("r_CreelUID"="dg_CreelUID")) %>%
+      left_join(creels %>% select(Creel_UID, Creel_Title), by=c("r_CreelUID"="Creel_UID")) %>%
+      arrange(Year) %>%
+      select(Year, Creel_Title, Pressure)
+
+    library(scales)
+    pressure %>%
+      ggplot() +
+      geom_bar(aes(x=Creel_Title, y=Pressure), stat="identity", fill="blue", color="blue") +
+      coord_flip() +
+      scale_y_continuous(labels = comma)+
+      labs(x="", y="Angler-Hours") +
+      theme_minimal() +
+      theme(panel.grid.major.y = element_blank())
+  })
   #### dj stockings ----
   output$plannedStockings <- renderTable({
 
