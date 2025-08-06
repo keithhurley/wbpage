@@ -141,25 +141,25 @@ absolutePanel(
       card(full_height = TRUE, class = "flex-fill", card_header("Species Observed"), card_body(uiOutput("surveySpecies")))
     ),
   ),
-  # fluidRow(
-  #   column(
-  #     width = 12,
-  #     card(
-  #       full_height = TRUE,
-  #       class = "flex-fill d-flex flex-column",
-  #       card_header("Recent Sampling Results"),
-  #       card_body(
-  #         class = "flex-fill d-flex flex-column",
-  #         
-  #         # a) the plot
-  #         plotOutput("selectedCPUE", height = "60vh", width = "100%"),
-  #         
-  #         # b) the dots
-  #         uiOutput("cpueDots")
-  #       )
-  #     )
-  #   )
-  # ),
+  fluidRow(
+    column(
+      width = 12,
+      card(
+        full_height = TRUE,
+        class = "flex-fill d-flex flex-column",
+        card_header("Recent Sampling Results"),
+        card_body(
+          class = "flex-fill d-flex flex-column",
+
+          # a) the plot
+          plotOutput("selectedCPUE", height = "60vh", width = "100%"),
+
+          # b) the dots
+          uiOutput("cpueDots")
+        )
+      )
+    )
+  ),
   uiOutput("cpue_card"),
   fluidRow(class = "d-flex full‐height‐row",
            column(
@@ -228,19 +228,32 @@ absolutePanel(
                  class = "flex-fill d-flex flex-column",
                  tableOutput("plannedDJ")
                )
-             ))),
-  fluidRow(class = "d-flex full‐height‐row",
-           column(
-             width = 12, class = "d-flex flex-column",
-             card(
-               full_height = TRUE,
-               class = "flex-fill d-flex flex-column",
-               card_header("Creel Results"),
-               card_body(
-                 class = "flex-fill d-flex flex-column",
-                 plotOutput("creelPressure")
-               )
-             )))
+             )))#,
+  # fluidRow(class = "d-flex full‐height‐row",
+  #          column(
+  #            width = 8, class = "d-flex flex-column",
+  #            card(
+  #              full_height = TRUE,
+  #              class = "flex-fill d-flex flex-column",
+  #              card_header("Creel Results"),
+  #              card_body(
+  #                class = "flex-fill d-flex flex-column",
+  #                plotOutput("creelPressure")
+  #              )
+  #            )),
+  #          column(
+  #            width=4, class="d-flex flex-column",
+  #            card(
+  #              full_height=TRUE,
+  #              class="flex-fill d-flex flex-column",
+  #              card_header("Creel CPUE"),
+  #              card_body(
+  #                class="flex-fill d-flex flex-column",
+  #                plotOutput("creelCPUE")
+  #              )
+  #            )
+  #          )
+  #          )
   
 )
 
@@ -788,36 +801,85 @@ server <- function(input, output, session) {
   )
   # #### creel pressure ----
   output$creelPressure <-renderPlot({
-    library(ngpcHistoricCreel)
-
-    creels<-creel_getCreels()
-    m<-foreach(intX=seq(1,nrow(creels)-1,3), .combine="rbind") %do% {
-      creel_getData_designGeneral(ids[seq(intX,intX+2,1),] %>% pull(Creel_UID)%>% paste(.,collapse=", ")) %>% filter(dg_WaterbodyCode==5110)
-      #if(nrow(op)>0) {return (op$dg_CreelUID)}
-    }
-    n<-foreach(intX=seq(1,nrow(m)-1,3), .combine="rbind") %do% {
-      op<-creel_getResults(m[seq(intX,intX+2,1),] %>% pull(dg_CreelUID) %>% paste(.,collapse=", ")) %>%
-        filter(r_Parameter %in% c(1,2,3)) %>% filter(r_AnglerType==4 & r_AnglerMethod==5)
-      #if(nrow(op)>0) {return (op$dg_CreelUID)}
-    }
-    pressure <- n %>% group_by(r_CreelUID) %>% filter(r_Parameter==1) %>% filter(r_Species==0) %>%
-      summarise(Pressure=sum(r_Value, na.rm=TRUE)) %>%
-      left_join(m %>% select(dg_CreelUID, dg_CreelStartDate) %>%
-                  mutate(Year=year(ymd_hms(dg_CreelStartDate))), by=c("r_CreelUID"="dg_CreelUID")) %>%
-      left_join(creels %>% select(Creel_UID, Creel_Title), by=c("r_CreelUID"="Creel_UID")) %>%
-      arrange(Year) %>%
-      select(Year, Creel_Title, Pressure)
-
-    library(scales)
-    pressure %>%
-      ggplot() +
-      geom_bar(aes(x=Creel_Title, y=Pressure), stat="identity", fill="blue", color="blue") +
-      coord_flip() +
-      scale_y_continuous(labels = comma)+
-      labs(x="", y="Angler-Hours") +
-      theme_minimal() +
-      theme(panel.grid.major.y = element_blank())
+    # library(ngpcHistoricCreel)
+    # 
+    # creels<-creel_getCreels()
+    # m<-foreach(intX=seq(1,nrow(creels)-1,3), .combine="rbind") %do% {
+    #   creel_getData_designGeneral(ids[seq(intX,intX+2,1),] %>% pull(Creel_UID)%>% paste(.,collapse=", ")) %>% filter(dg_WaterbodyCode==5110)
+    #   #if(nrow(op)>0) {return (op$dg_CreelUID)}
+    # }
+    # n<-foreach(intX=seq(1,nrow(m)-1,3), .combine="rbind") %do% {
+    #   op<-creel_getResults(m[seq(intX,intX+2,1),] %>% pull(dg_CreelUID) %>% paste(.,collapse=", ")) %>%
+    #     filter(r_Parameter %in% c(1,2,3)) %>% filter(r_AnglerType==4 & r_AnglerMethod==5)
+    #   #if(nrow(op)>0) {return (op$dg_CreelUID)}
+    # }
+    # pressure <- n %>% group_by(r_CreelUID) %>% filter(r_Parameter==1) %>% filter(r_Species==0) %>%
+    #   summarise(Pressure=sum(r_Value, na.rm=TRUE)) %>%
+    #   left_join(m %>% select(dg_CreelUID, dg_CreelStartDate) %>%
+    #               mutate(Year=year(ymd_hms(dg_CreelStartDate))), by=c("r_CreelUID"="dg_CreelUID")) %>%
+    #   left_join(creels %>% select(Creel_UID, Creel_Title), by=c("r_CreelUID"="Creel_UID")) %>%
+    #   arrange(Year) %>%
+    #   select(Year, Creel_Title, Pressure)
+    # 
+    # library(scales)
+    # pressure %>%
+    #   ggplot() +
+    #   geom_bar(aes(x=Creel_Title, y=Pressure), stat="identity", fill="blue", color="blue") +
+    #   coord_flip() +
+    #   scale_y_continuous(labels = comma)+
+    #   labs(x="", y="Angler-Hours") +
+    #   theme_minimal() +
+    #   theme(panel.grid.major.y = element_blank()) +
+    #   theme(axis.title = element_text(size=22),
+    #         axis.text = element_text(size=20))
   })
+  
+  output$creelCPUE<-renderPlot({
+     # creels<-creel_getCreels()
+     # m<-foreach(intX=seq(1,nrow(creels)-1,3), .combine="rbind") %do% {
+     #   creel_getData_designGeneral(ids[seq(intX,intX+2,1),] %>% pull(Creel_UID)%>% paste(.,collapse=", ")) %>% filter(dg_WaterbodyCode==5110)
+     # }
+     
+    # n<-foreach(intX=seq(1,nrow(m)-1,3), .combine="rbind") %do% {
+    #   op<-creel_getResults(m[seq(intX,intX+2,1),] %>% pull(dg_CreelUID) %>% paste(.,collapse=", ")) %>% 
+    #     filter(r_Parameter %in% c(8)) %>% filter(r_AnglerType==4 & r_AnglerMethod==5) 
+    # } 
+    # 
+    # catchRate <- n %>% filter(r_Parameter==8) %>% select(r_CreelUID, r_Species, r_Month, r_AnglerType, r_Value)
+    # 
+    # top3 <- catchRate %>%
+    #   group_by(r_CreelUID) %>%
+    #   slice_max(order_by = r_Value, n = 3, with_ties = FALSE) %>%
+    #   ungroup()
+    # 
+    # species_list <- top3 %>%
+    #   group_by(r_CreelUID) %>%
+    #   summarise(top_species = list(r_Species))
+    # 
+    # catch_top3 <- catchRate %>%
+    #   semi_join(top3, by = c("r_CreelUID", "r_Species"))  %>% 
+    #   left_join(m %>% select(dg_CreelUID, dg_CreelStartDate) %>% 
+    #               mutate(Year=year(ymd_hms(dg_CreelStartDate))), by=c("r_CreelUID"="dg_CreelUID")) %>%
+    #   left_join(creels %>% select(Creel_UID, Creel_Title), by=c("r_CreelUID"="Creel_UID")) %>%
+    #   mutate(Species=NGPC_match_codes(r_Species, codeType="species"),
+    #          Month=NGPC_match_codes(r_Month, codeType="month")) %>%
+    #   arrange(Year) %>%
+    #   select(Year, Creel_Title, Species, Month, r_Value) 
+    # 
+    # ggplot(data=catch_top3 %>% filter(Year>year(now())-10)) +
+    #   geom_bar(aes(x=Species, y=r_Value, group=Month, color=Month, fill = Month), position="dodge", stat="identity") +
+    #   facet_wrap(~Creel_Title, ncol=1, scales="free_x") +
+    #   labs(x="",y="Fish Per Hour", Fill="", Color="") +
+    #   scale_fill_viridis_d(end=0.8) +
+    #   scale_color_viridis_d(end=0.8) +
+    #   theme_minimal() +
+    #   theme(panel.grid.major.x=element_blank(),
+    #         panel.grid.minor=element_blank(),
+    #         strip.background = element_rect(color="black", fill="lightsteelblue"))
+  })
+  
+  
+  
   #### dj stockings ----
   output$plannedStockings <- renderTable({
 
