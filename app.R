@@ -3,20 +3,23 @@
 
 ## libraries ----
 library(shiny)
+library(shinyWidgets)
+library(bslib)
 library(dplyr)
 library(lubridate)
 library(stringr)
 library(rlist)
-library(bslib)
-library(shinyWidgets)
 library(leaflet)
 library(leaflet.extras)
 library(sf)
 library(urltools)
-library(ngpcFisheries)
-library(FinCatchAnalysis)
 library(shinyjs)
 library(shinybusy)
+library(scales)
+library(ngpcHistoricCreel)
+library(ngpcFisheries)
+library(FinCatchAnalysis)
+
 
 
 ## UI ----
@@ -229,31 +232,7 @@ absolutePanel(
                  tableOutput("plannedDJ")
                )
              ))),
-  fluidRow(class = "d-flex full‐height‐row",
-           column(
-             width = 5, class = "d-flex flex-column",
-             card(
-               full_height = TRUE,
-               class = "flex-fill d-flex flex-column",
-               card_header("Creel Pressure"),
-               card_body(
-                 class = "flex-fill d-flex flex-column",
-                 plotOutput("creelPressure")
-               )
-             )),
-           column(
-             width=7, class="d-flex flex-column",
-             card(
-               full_height=TRUE,
-               class="flex-fill d-flex flex-column",
-               card_header("Creel CPUE (Top 3 species)"),
-               card_body(
-                 class="flex-fill d-flex flex-column",
-                 plotOutput("creelCPUE")
-               )
-             )
-           )
-           )
+  uiOutput("creelSection")
   
 )
 
@@ -273,6 +252,9 @@ server <- function(input, output, session) {
   rv$dj_data<-NA
   rv$stockings<-NA
   rv$contours<-NULL
+  rv$creelPlots<-NULL
+  rv$currentCreelPlot<-1
+  rv$creelPressurePlot<-NULL
   
   #### get possible wb codes ----
   getWaterbodyList <- function() {
@@ -790,8 +772,8 @@ server <- function(input, output, session) {
   
   #### dj plans ----
   output$plannedDJ <- renderTable({
-    if (is.null(rv$dj_data) || nrow(rv$dj_data) == 0) {
-      # return a one‐row data.frame so that the card shows your message
+    if (is.null(rv$dj_data) || (length(rv$dj_data) == 1 && is.na(rv$dj_data)) || (is.data.frame(rv$dj_data) && nrow(rv$dj_data) == 0)) {
+        # return a one‐row data.frame so that the card shows your message
       return(data.frame(` ` = "No data exists."))
     }
     rv$dj_data
@@ -800,85 +782,268 @@ server <- function(input, output, session) {
     colnames=FALSE
   )
   # #### creel pressure ----
-  output$creelPressure <-renderPlot({
-    library(ngpcHistoricCreel)
-
-    creels<-creel_searchCreelsByWaterbodyCode(rv$wb)
-    if(length(creels>0)) {
+  #### creel pressure data ----
+  observe({
+    req(rv$wb)
+    creels <- creel_searchCreelsByWaterbodyCode(rv$wb)
     
+    # Reset
+    rv$creelPressurePlot <- NULL
     
-    n<-foreach(intX=seq(1,length(creels),1), .combine="rbind") %do% {
-      op<-creel_getResults(creels[seq(intX,intX+2,1)] %>% paste(.,collapse=", ")) %>%
-        filter(r_Parameter %in% c(1,2,3)) %>% filter(r_AnglerType==4 & r_AnglerMethod==5)
-    }
-    
-    pressure <- n %>% group_by(r_CreelUID) %>% filter(r_Parameter==1) %>% filter(r_Species==0) %>%
-      summarise(Pressure=sum(r_Value, na.rm=TRUE)) %>%
-      left_join(m %>% select(dg_CreelUID, dg_CreelStartDate) %>%
-                  mutate(Year=year(ymd_hms(dg_CreelStartDate))), by=c("r_CreelUID"="dg_CreelUID")) %>%
-      left_join(creel_getCreels() %>% filter(Creel_UID %in% creels) %>% select(Creel_UID, Creel_Title),
-                by=c("r_CreelUID"="Creel_UID")) %>%
-      arrange(Year) %>%
-      select(Year, Creel_Title, Pressure)
-
-    library(scales)
-    pressure %>%
-      ggplot() +
-      geom_bar(aes(x=Creel_Title, y=Pressure), stat="identity", fill="blue", color="blue") +
-      coord_flip() +
-      scale_y_continuous(labels = comma)+
-      labs(x="", y="Angler-Hours") +
-      theme_minimal() +
-      theme(panel.grid.major.y = element_blank()) +
-      theme(axis.title = element_text(size=22),
-            axis.text = element_text(size=20))
+    if(!is.null(creels) && length(creels) > 0) {
+      
+      # Fetch data one by one
+      n_list <- lapply(creels, function(x) {
+        tryCatch({
+          # fetch
+          res <- creel_getResults(as.character(x))
+          if(is.null(res) || nrow(res) == 0) return(NULL)
+          
+          # filter
+          res %>% 
+            filter(r_Parameter %in% c(1,2,3),
+                   r_AnglerType == 4, 
+                   r_AnglerMethod == 5)
+        }, error = function(e) NULL)
+      })
+      
+      # check for data frame
+      n_list <- n_list[!sapply(n_list, is.null)]
+      
+      if (length(n_list) > 0) {
+        n <- bind_rows(n_list)
+        
+        if(!is.null(n) && nrow(n) > 0) {
+          # Process
+          pressure <- n %>% 
+            filter(r_Parameter == 1, (r_Species == 0 | is.na(r_Species))) %>%
+            group_by(r_CreelUID) %>%
+            summarise(Pressure = sum(r_Value, na.rm = TRUE))
+            
+          if(!is.null(pressure) && nrow(pressure) > 0) {
+              # Joins
+              all_creels_str <- paste(creels, collapse = ",")
+              design_data <- tryCatch(creel_getData_designGeneral(all_creels_str), error=function(e) NULL)
+              creel_titles <- tryCatch(creel_getCreels(), error=function(e) NULL)
+              
+              if (!is.null(design_data) && nrow(design_data) > 0) {
+                 pressure <- pressure %>% 
+                   left_join(design_data %>% 
+                      select(dg_CreelUID, dg_CreelStartDate) %>% 
+                      mutate(Year = year(ymd_hms(dg_CreelStartDate))), 
+                    by = c("r_CreelUID" = "dg_CreelUID"))
+              } else { pressure$Year <- NA }
+              
+              if (!is.null(creel_titles) && nrow(creel_titles) > 0) {
+                 pressure <- pressure %>% 
+                   left_join(creel_titles %>% 
+                      filter(Creel_UID %in% creels) %>% 
+                      select(Creel_UID, Creel_Title),
+                    by = c("r_CreelUID" = "Creel_UID"))
+              } else { pressure$Creel_Title <- pressure$r_CreelUID }
+              
+              p <- pressure %>%
+                arrange(Year) %>%
+                ggplot() +
+                geom_bar(aes(x = Creel_Title, y = Pressure), stat = "identity", fill = "blue", color = "blue") +
+                coord_flip() +
+                scale_y_continuous(labels = scales::comma) +
+                labs(x = "", y = "Angler-Hours") +
+                theme_minimal() +
+                theme(panel.grid.major.y = element_blank()) +
+                theme(axis.title = element_text(size = 22),
+                      axis.text = element_text(size = 20))
+              
+              rv$creelPressurePlot <- p
+          }
+        }
+      }
     }
   })
+
+  output$creelPressure <- renderPlot({
+    req(rv$creelPressurePlot)
+    rv$creelPressurePlot
+  })
+
+  output$creelSection <- renderUI({
+     has_pressure <- !is.null(rv$creelPressurePlot)
+     has_cpue <- !is.null(rv$creelPlots) && length(rv$creelPlots) > 0
+     
+     if (!has_pressure && !has_cpue) return(NULL)
+     
+     # Ensure full height for cards is passed correctly
+     if (has_pressure && has_cpue) {
+       fluidRow(class = "d-flex full‐height‐row",
+           column(width = 5, class = "d-flex flex-column",
+             card(full_height = TRUE, class = "flex-fill d-flex flex-column",
+               card_header("Creel Pressure"),
+               card_body(class = "flex-fill d-flex flex-column", plotOutput("creelPressure"))
+             )),
+           column(width = 7, class = "d-flex flex-column",
+             card(full_height = TRUE, class = "flex-fill d-flex flex-column",
+               card_header("Creel CPUE (Top 3 species)"),
+               card_body(class="flex-fill d-flex flex-column", plotOutput("creelCPUE"), uiOutput("creelCpueDots"))
+             ))
+       )
+     } else if (has_pressure) {
+       fluidRow(class = "d-flex full‐height‐row",
+           column(width = 12, class = "d-flex flex-column",
+             card(full_height = TRUE, class = "flex-fill d-flex flex-column",
+               card_header("Creel Pressure"),
+               card_body(class = "flex-fill d-flex flex-column", plotOutput("creelPressure"))
+             ))
+       )
+     } else {
+       fluidRow(class = "d-flex full‐height‐row",
+           column(width = 12, class = "d-flex flex-column",
+             card(full_height = TRUE, class = "flex-fill d-flex flex-column",
+               card_header("Creel CPUE (Top 3 species)"),
+               card_body(class="flex-fill d-flex flex-column", plotOutput("creelCPUE"), uiOutput("creelCpueDots"))
+             ))
+       )
+     }
+  })
   
-  output$creelCPUE<-renderPlot({
-    creels<-creel_searchCreelsByWaterbodyCode(rv$wb)
-    if(length(creels>0)) {
-
-    n<-foreach(intX=seq(1,length(creels),1), .combine="rbind") %do% {
-      op<-creel_getResults(creels[seq(intX,intX+2,1)] %>% paste(.,collapse=", ")) %>%
-        filter(r_Parameter %in% c(8)) %>% filter(r_AnglerType==4 & r_AnglerMethod==5)
-    }
+  #### creel CPUE logic ----
+  observe({
+    req(rv$wb)
+    creels <- creel_searchCreelsByWaterbodyCode(rv$wb)
     
-    if(nrow(n)>0){
-
-    catchRate <- n %>% filter(r_Parameter==8) %>% select(r_CreelUID, r_Species, r_Month, r_AnglerType, r_Value)
-
-    top3 <- catchRate %>%
-      group_by(r_CreelUID) %>%
-      slice_max(order_by = r_Value, n = 3, with_ties = FALSE) %>%
-      ungroup()
-
-    species_list <- top3 %>%
-      group_by(r_CreelUID) %>%
-      summarise(top_species = list(r_Species))
-
-    catch_top3 <- catchRate %>%
-      semi_join(top3, by = c("r_CreelUID", "r_Species"))  %>%
-      left_join(m %>% select(dg_CreelUID, dg_CreelStartDate) %>%
-                  mutate(Year=year(ymd_hms(dg_CreelStartDate))), by=c("r_CreelUID"="dg_CreelUID")) %>%
-      left_join(creel_getCreels() %>% filter(Creel_UID %in% creels) %>% select(Creel_UID, Creel_Title), by=c("r_CreelUID"="Creel_UID")) %>%
-      mutate(Species=NGPC_match_codes(r_Species, codeType="species"),
-             Month=NGPC_match_codes(r_Month, codeType="month")) %>%
-      arrange(Year) %>%
-      select(Year, Creel_Title, Species, Month, r_Value)
-
-    ggplot(data=catch_top3 %>% filter(Year>year(now())-10)) +
-      geom_bar(aes(x=Species, y=r_Value, group=Month, color=Month, fill = Month), position="dodge", stat="identity") +
-      facet_wrap(~Creel_Title, ncol=1, scales="free_x") +
-      labs(x="",y="Fish Per Hour", Fill="", Color="") +
-      scale_fill_viridis_d(end=0.8) +
-      scale_color_viridis_d(end=0.8) +
-      theme_minimal() +
-      theme(panel.grid.major.x=element_blank(),
-            panel.grid.minor=element_blank(),
-            strip.background = element_rect(color="black", fill="lightsteelblue"))
+    if (length(creels) > 0) {
+      
+      # Batch fetch data for all creels
+      # Note: fetching in chunks of 3 as per original code, though doing all might be fine if N is small.
+      # Sticking to original chunking logic to be safe.
+      n <- foreach(intX = seq(1, length(creels), 1), .combine = "rbind") %do% {
+        # Original code used a weird seq logic: creels[seq(intX, intX+2, 1)]. 
+        # If loop is 1 to length, this over-fetches or fails on bounds? 
+        # Actually original code: seq(1, length, 1) implies step 1.
+        # But `creels[seq(intX, intX+2, 1)]` grabs 3 items starting at intX.
+        # If length is 5: 
+        # i=1 -> 1,2,3
+        # i=2 -> 2,3,4
+        # ... this creates duplicates! 
+        # But `creel_getResults` takes a comma lists.
+        # Let's clean this up to just fetch all at once or in proper batches if API limits exist.
+        # Assuming the original developer meant batches of 3, but the loop step was 1.
+        # Simplification: Just join them all if reasonable, or fix the batching.
+        # Let's try fetching all for now to remove complexity, assuming N isn't massive.
+        # If strict batching is needed: split nicely.
+        NULL # Placeholder if we change approach below
+      }
+      
+      # Better fetch approach:
+      # Just fetch all creels 
+      all_creel_ids <- paste(creels, collapse = ",")
+      op <- tryCatch(
+        creel_getResults(all_creel_ids),
+        error = function(e) NULL
+      )
+      
+      if (!is.null(op) && nrow(op) > 0) {
+        # Filter for CPUE (Parameter 8), AnglerType 4 (Boat?), Method 5 (?) -> matching original filters
+        n <- op %>% 
+             filter(r_Parameter == 8) %>% 
+             filter(r_AnglerType == 4 & r_AnglerMethod == 5)
+             
+        if(nrow(n) > 0){
+          catchRate <- n %>% select(r_CreelUID, r_Species, r_Month, r_AnglerType, r_Value)
+          
+          # Fix Top 3 Species Logic: Group by Creel+Species first
+          top3_species <- catchRate %>%
+            group_by(r_CreelUID, r_Species) %>%
+            summarise(TotalCatch = sum(r_Value, na.rm=TRUE), .groups="drop") %>%
+            group_by(r_CreelUID) %>%
+            slice_max(order_by = TotalCatch, n = 3, with_ties = FALSE) %>%
+            ungroup() %>%
+            select(r_CreelUID, r_Species)
+            
+          # Filter main data to these species
+          catch_top3 <- catchRate %>%
+            inner_join(top3_species, by = c("r_CreelUID", "r_Species")) %>%
+            left_join(creel_getData_designGeneral(all_creel_ids) %>% 
+                      select(dg_CreelUID, dg_CreelStartDate) %>%
+                      mutate(Year = year(ymd_hms(dg_CreelStartDate))), 
+                      by = c("r_CreelUID" = "dg_CreelUID")) %>%
+            left_join(creel_getCreels() %>% 
+                      filter(Creel_UID %in% creels) %>% 
+                      select(Creel_UID, Creel_Title), 
+                      by = c("r_CreelUID" = "Creel_UID")) %>%
+            mutate(Species = NGPC_match_codes(r_Species, codeType="species"),
+                   Month = NGPC_match_codes(r_Month, codeType="month")) %>%
+            arrange(Year)
+            
+          # Generate plots per creel
+          unique_creels <- sort(unique(catch_top3$Creel_Title))
+          
+          plot_list <- lapply(unique_creels, function(c_title) {
+             p_data <- catch_top3 %>% filter(Creel_Title == c_title)
+             
+             ggplot(data = p_data) +
+               geom_bar(aes(x = Species, y = r_Value, group = Month, color = Month, fill = Month), 
+                        position = "dodge", stat = "identity") +
+               # Remove facet_wrap, add title
+               labs(x = "", y = "Fish Per Hour", fill = "", color = "", title = c_title) +
+               scale_fill_viridis_d(end = 0.8) +
+               scale_color_viridis_d(end = 0.8) +
+               theme_minimal() +
+               theme(
+                 panel.grid.major.x = element_blank(),
+                 panel.grid.minor = element_blank(),
+                 plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+                 axis.title = element_text(size = 16),
+                 axis.text = element_text(size = 14)
+               )
+          })
+          
+          rv$creelPlots <- plot_list
+          rv$currentCreelPlot <- 1 # Reset to first on new data
+        } else {
+           rv$creelPlots <- NULL
+        }
+      } else {
+        rv$creelPlots <- NULL
+      }
+    } else {
+      rv$creelPlots <- NULL
     }
-    }
+  })
+
+  output$creelCPUE <- renderPlot({
+    req(rv$creelPlots)
+    idx <- rv$currentCreelPlot
+    # Safety check
+    if (idx < 1 || idx > length(rv$creelPlots)) idx <- 1
+    rv$creelPlots[[idx]]
+  })
+  
+  # Creel Dot Navigation Observer
+  observe({
+    req(rv$creelPlots)
+    n <- length(rv$creelPlots)
+    lapply(seq_len(n), function(i) {
+      observeEvent(input[[paste0("creel_dot", i)]], {
+        rv$currentCreelPlot <- i
+      }, ignoreInit = TRUE)
+    })
+  })
+  
+  output$creelCpueDots <- renderUI({
+    req(rv$creelPlots)
+    n <- length(rv$creelPlots)
+    idx <- rv$currentCreelPlot
+    
+    tags$div(
+      style = "text-align: center; margin-top: 0px;",
+      lapply(seq_len(n), function(i) {
+        actionLink(
+          inputId = paste0("creel_dot", i),
+          label   = HTML(if (i == idx) "&#9679;" else "&#9675;"),
+          style   = "font-size: 24px; margin: 0 5px; color: #007bff; text-decoration:none;"
+        )
+      })
+    )
   })
   
   
